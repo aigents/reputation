@@ -206,6 +206,9 @@ class PythonReputationService(ReputationServiceBase):
     def clear_ranks(self):
         self.reputation = {}   
         self.all_reputations = {}
+        self.predictive_data = dict()
+        self.pred_values = dict()
+        self.count_values = dict()
         logging.debug('Ranks cleared.')
         return(0)
     ### Clear stored ratings (transactions).
@@ -262,6 +265,7 @@ class PythonReputationService(ReputationServiceBase):
     def update_ranks(self,mydate):
         if not "rater_ranks_special" in dir(self):
             self.rater_ranks_special = dict()
+        self.non_rounded_rep = dict()
         text = "period " +  str(self.update_period)
         logging.debug(text)
         ### And then we iterate through functions. First we prepare arrays and basic computations.
@@ -272,7 +276,7 @@ class PythonReputationService(ReputationServiceBase):
             else:
                 self.rater_biases = dict()
                 self.rater_biases[since] = dict()
-        if self.predictiveness:
+        if self.predictiveness>0:
             if 'predictive_data' in dir(self):
                 pass
             else:
@@ -305,7 +309,6 @@ class PythonReputationService(ReputationServiceBase):
                 self.downrating=False
         ### we set up arrays; this is the set of data where we have ratings, values, weights
         ### in predictable way, so we can iterate them later on.
-        
         if self.rating_bias:
             if 'average_ratings' in dir(self):
                 pass
@@ -320,8 +323,7 @@ class PythonReputationService(ReputationServiceBase):
         ### Now we update the reputation. Here, old ranings are inseter and then new ones are calculated as output.
 
         self.reputation = update_reputation(self.reputation,array1,self.default,self.spendings)
-
-        ### we take data from date-update_period.
+        
         
         ### If we have spendings-based reputation, we go in the loop below.
         if self.spendings>0:
@@ -339,6 +341,20 @@ class PythonReputationService(ReputationServiceBase):
         text = "Normalized differential: " + str(new_reputation)
         logging.debug(text)  
         ### Again only starting this loop if we have spendings.
+        ### we take data from date-update_period.
+        ### For spendings-based system. We store all agents' reputations and then we only show reputations of
+        ### sellers when get_ranks() is called. This is not in line with Java implementation, which only returns
+        ### sellers. To circumvent that, we make an object in which we store only sellers and we then return only sellers.
+        ### We still need all ranks, so they are still stored in self.all_reputations
+        
+        if "sellers" in dir(self):
+            pass
+        else:
+            self.sellers = []
+        
+        for k in new_reputation.keys():
+            if k not in self.sellers:
+                self.sellers.append(k)
         if (self.spendings>0 and self.predictiveness==0):
             updated_differential = dict()
             unique_keys = list(new_reputation.keys())
@@ -367,6 +383,7 @@ class PythonReputationService(ReputationServiceBase):
         text = "Blended differential with reputation: " + str(self.reputation)
         logging.debug(text) 
         self.reputation = normalize_reputation(self.reputation,array1,self.unrated,self.default,self.decayed,self.conservatism,self.downrating)
+        self.non_rounded_rep = dict(self.reputation)
         ### round reputations:
         for k in self.reputation.keys():
             self.reputation[k] = my_round(self.reputation[k],2) # Make sure we use my_round. 
@@ -379,11 +396,11 @@ class PythonReputationService(ReputationServiceBase):
             avg_ind_rat_byperiod,self.count_values[mydate] = calculate_average_individual_rating_by_period(array1,True)
             text = "Average individual rating by period: " + str(avg_ind_rat_byperiod)
             logging.debug(text)
+            #self.predictive_data, ids = update_predictiveness_data(self.predictive_data,mydate,self.reputation,avg_ind_rat_byperiod,self.conservatism)
             self.predictive_data, ids = update_predictiveness_data(self.predictive_data,mydate,self.reputation,avg_ind_rat_byperiod,self.conservatism)
             self.calculate_indrating(ids,mydate)
             text = "Individual rating: " + str(self.predictive_data) + ", and rating used for rater reputation: " + str(self.pred_values)
             logging.debug(text)                 
-        
         return(0)
 
     ### When we want to save ratings to our system. So, we can add them, the same way as in Java.        
@@ -425,6 +442,13 @@ class PythonReputationService(ReputationServiceBase):
             all_results.append({'id':k,'rank':my_round(result[k]*100,0)})  
         #logging.debug("network get ranks: ",str(all_results))
         logging.info("network get ranks: {0}".format(all_results))
+        ### Now, if we have spending, we only return those that are sellers;
+        #if self.spendings>0:
+        #    my_results = dict()
+        #    for k in all_results.keys():
+        #        if k in self.sellers:
+        #            my_results[k] = all_results[k]       
+        #    all_results=my_results                    
         return(0,all_results)
     ### get_ranks_dict is similar as get_ranks
     def get_ranks_dict(self,times):
@@ -440,6 +464,12 @@ class PythonReputationService(ReputationServiceBase):
             ### Everything is similar to get_ranks, but we only return result, not really 0 beside result.
         #logging.debug("network get ranks: " , str(result))
         logging.info("network get ranks: {0}".format(result))
+        #if self.spendings>0:
+        #    my_results = dict()
+        #    for k in result.keys():
+        #        if k in self.sellers:
+        #            my_results[k] = result[k]
+        #    result=my_results
         return(result)    
 
     ### Getting ratings from Python rs.
@@ -516,9 +546,9 @@ class PythonReputationService(ReputationServiceBase):
             thevalues = []
             relevant_ranks = []
             for j in k.keys():
-
                 nr_appearances = 1
-                relevant_ranks.append(self.reputation[j])
+                
+                relevant_ranks.append(self.non_rounded_rep[j])
                 thevalues.append(k[j])
 
                     
@@ -529,21 +559,23 @@ class PythonReputationService(ReputationServiceBase):
                 
             correlats[k1] = cors 
             ### I think all cors values should be first normalized.
-        
         for k1 in self.predictive_data.keys():    
             correlats[k1] = 1 - correlats[k1]
-        max_correlats = max(correlats.values())
-        for k1 in correlats.keys():
-            correlats[k1] = correlats[k1]/max_correlats  
+        if len(correlats)==0:
+            max_correlats = 1
+        else:
+            max_correlats = max(correlats.values())
+        #for k1 in correlats.keys():
+        #    correlats[k1] = correlats[k1]/max_correlats 
         for k1 in self.predictive_data.keys():     
 
             
             if k1 in self.pred_values.keys():
-                self.pred_values[k1] = correlats[k1] 
+                self.pred_values[k1] = correlats[k1]
             else:
                 self.pred_values[k1] = dict()
-                self.pred_values[k1] = correlats[k1] 
-   
+                self.pred_values[k1] = correlats[k1]
+        
         return(0)
     
     
